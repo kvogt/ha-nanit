@@ -26,6 +26,8 @@ TO_REDACT = {
     "speaker_ips",
     "speaker_uid",
     "speaker_uid_map",
+    "local_rtmp_url",
+    "local_rtmp_urls",
 }
 
 

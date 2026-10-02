@@ -1218,7 +1218,8 @@ async def test_camera_reconnect_rerequests_local_stream(hass: HomeAssistant) -> 
     coordinator.data = _camera_state(connection_state=ConnectionState.CONNECTED)
     entity._handle_coordinator_update()  # RECONNECTING -> CONNECTED
 
-    keeper.request.assert_called_once_with()
+    keeper.request_later.assert_called_once()
+    keeper.request.assert_not_called()
     assert entity.extra_state_attributes == {"local_stream": True}
 
 
@@ -1263,3 +1264,57 @@ async def test_camera_removal_stops_local_stream(hass: HomeAssistant) -> None:
 
     keeper.stop.assert_called_once_with()
     assert entity._local_stream is None
+
+
+async def test_camera_sleep_cancels_pending_local_stream(hass: HomeAssistant) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
+    entity.hass = hass
+    _disable_state_writes(entity)
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    entity._handle_coordinator_update()  # awake
+    keeper.cancel_pending.assert_not_called()
+    coordinator.data = _camera_state(sleep_mode=True)
+    entity._handle_coordinator_update()  # awake -> asleep
+
+    keeper.cancel_pending.assert_called_once_with()
+    keeper.request.assert_not_called()
+
+
+@pytest.mark.parametrize("sleep_mode", [None, True])
+def test_camera_confirmed_awake_fails_closed(sleep_mode: bool | None) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=sleep_mode))
+    entity = NanitCameraEntity(
+        coordinator, MagicMock(uid="cam_1"), local_rtmp_url="rtmp://h:1935/n"
+    )
+
+    assert entity._confirmed_awake() is False
+
+
+def test_camera_confirmed_awake_without_data_is_false() -> None:
+    coordinator = _push_coordinator(None)
+    entity = NanitCameraEntity(
+        coordinator, MagicMock(uid="cam_1"), local_rtmp_url="rtmp://h:1935/n"
+    )
+
+    assert entity._confirmed_awake() is False
+    assert entity.is_on is True  # the display property keeps its own default
+
+
+async def test_camera_turn_off_cancels_pending_local_stream(hass: HomeAssistant) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_stop_streaming = AsyncMock()
+    camera.async_set_settings = AsyncMock()
+    entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
+    entity.hass = hass
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    await entity.async_turn_off()
+
+    keeper.cancel_pending.assert_called_once_with()
+    camera.async_set_settings.assert_awaited_once_with(sleep_mode=True)

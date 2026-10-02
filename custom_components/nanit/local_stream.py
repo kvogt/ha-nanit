@@ -17,7 +17,7 @@ from datetime import timedelta
 from urllib.parse import urlsplit
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 from aionanit import NanitCamera
 
@@ -29,10 +29,13 @@ LOCAL_STREAM_INTERVAL = timedelta(seconds=60)
 
 
 def is_valid_local_rtmp_url(url: str) -> bool:
-    """Return True for an rtmp:// or rtmps:// URL with a host and a stream path."""
+    """Return True for an rtmp:// or rtmps:// URL with a host, a valid port and a stream path."""
     try:
         parts = urlsplit(url)
+        port = parts.port
     except ValueError:
+        return False
+    if port is not None and not 1 <= port <= 65535:
         return False
     return parts.scheme in ("rtmp", "rtmps") and bool(parts.hostname) and len(parts.path) > 1
 
@@ -55,14 +58,19 @@ class LocalStreamKeeper:
         hass: HomeAssistant,
         camera: NanitCamera,
         url: str,
-        is_on: Callable[[], bool],
+        is_awake: Callable[[], bool],
     ) -> None:
-        """Initialize."""
+        """Initialize.
+
+        ``is_awake`` must return True only when the camera is known to be out of
+        sleep mode; an unknown state counts as asleep.
+        """
         self._hass = hass
         self._camera = camera
         self._url = url
-        self._is_on = is_on
+        self._is_awake = is_awake
         self._cancel_interval: CALLBACK_TYPE | None = None
+        self._cancel_delayed: CALLBACK_TYPE | None = None
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -85,9 +93,32 @@ class LocalStreamKeeper:
         if self._cancel_interval is not None:
             self._cancel_interval()
             self._cancel_interval = None
+        self.cancel_pending()
+
+    @callback
+    def cancel_pending(self) -> None:
+        """Drop a delayed or in-flight request, e.g. when the camera goes to sleep."""
+        if self._cancel_delayed is not None:
+            self._cancel_delayed()
+            self._cancel_delayed = None
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
+
+    @callback
+    def request_later(self, delay: float) -> None:
+        """Request after ``delay`` seconds, so state pushed after a reconnect is seen first."""
+        if self._cancel_interval is None:
+            return
+        if self._cancel_delayed is not None:
+            self._cancel_delayed()
+
+        @callback
+        def _fire(_now: object) -> None:
+            self._cancel_delayed = None
+            self.request()
+
+        self._cancel_delayed = async_call_later(self._hass, delay, _fire)
 
     @callback
     def _handle_interval(self, _now: object = None) -> None:
@@ -98,7 +129,7 @@ class LocalStreamKeeper:
         """Send PUT_STREAMING once, unless a send is already in flight."""
         if self._cancel_interval is None:
             return
-        if not self._is_on() or not self._camera.connected:
+        if not self._is_awake() or not self._camera.connected:
             return
         if self._task is not None and not self._task.done():
             return

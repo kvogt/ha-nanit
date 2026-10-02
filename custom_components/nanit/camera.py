@@ -34,6 +34,7 @@ _STREAM_KEEPALIVE_INTERVAL = 5 * 60
 _STREAM_STOP_TIMEOUT = 5.0
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
+_LOCAL_STREAM_RECONNECT_DELAY = 10.0
 
 
 async def async_setup_entry(
@@ -115,6 +116,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         prev_conn_state = self._prev_conn_state
         self._prev_conn_state = conn_state
 
+        if self._local_stream is not None and not self._confirmed_awake():
+            self._local_stream.cancel_pending()
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
@@ -134,7 +137,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             # watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
             if self._local_stream is not None:
-                self._local_stream.request()
+                # Settings re-read on reconnect land a moment later; the
+                # request re-checks sleep mode once they have.
+                self._local_stream.request_later(_LOCAL_STREAM_RECONNECT_DELAY)
 
         super()._handle_coordinator_update()
 
@@ -163,9 +168,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         await super().async_added_to_hass()
         if self._local_rtmp_url is not None:
             self._local_stream = LocalStreamKeeper(
-                self.hass, self._camera, self._local_rtmp_url, lambda: self.is_on
+                self.hass, self._camera, self._local_rtmp_url, self._confirmed_awake
             )
             self._local_stream.start()
+
+    def _confirmed_awake(self) -> bool:
+        """Return True only when the camera reported sleep mode off; unknown counts as asleep."""
+        data = self.coordinator.data
+        return data is not None and data.settings.sleep_mode is False
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -593,6 +603,8 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     async def async_turn_off(self) -> None:
         """Turn the camera off (enable sleep/standby mode)."""
+        if self._local_stream is not None:
+            self._local_stream.cancel_pending()
         self._invalidate_stream()
         try:
             await self._camera.async_stop_streaming()

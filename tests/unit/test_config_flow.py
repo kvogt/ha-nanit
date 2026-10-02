@@ -1195,3 +1195,17 @@ async def test_options_flow_clears_local_rtmp_url_when_empty(hass: HomeAssistant
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"]["local_rtmp_urls"] == {}
+
+
+async def test_options_flow_camera_step_exposes_camera_uid(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    placeholders = _as_dict(_as_dict(result).get("description_placeholders"))
+    assert placeholders.get("camera_uid") == MOCK_BABY_1.camera_uid

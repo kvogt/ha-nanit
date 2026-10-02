@@ -507,6 +507,9 @@ class NanitOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="camera_ip",
             data_schema=vol.Schema(schema_fields),
-            description_placeholders={"camera_name": display_name(baby.name, baby.uid)},
+            description_placeholders={
+                "camera_name": display_name(baby.name, baby.uid),
+                "camera_uid": camera_uid or "",
+            },
             errors=errors,
         )

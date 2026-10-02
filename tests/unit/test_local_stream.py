@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,6 +46,11 @@ def _camera(*, connected: bool = True, fail: bool = False) -> MagicMock:
         ("rtmp:///cam", False),
         ("http://192.168.0.250/cam", False),
         ("192.168.0.250:1935/cam", False),
+        ("rtmp://192.168.0.250:65536/cam", False),
+        ("rtmp://192.168.0.250:0/cam", False),
+        ("rtmp://192.168.0.250:abc/cam", False),
+        ("rtmp://192.168.0.250:-1/cam", False),
+        ("rtmp://192.168.0.250:65535/cam", True),
         ("", False),
     ],
 )
@@ -140,4 +147,61 @@ async def test_failed_request_is_swallowed_and_retried(hass: HomeAssistant) -> N
     await hass.async_block_till_done()
 
     assert camera.async_start_streaming.await_count == 2
+    keeper.stop()
+
+
+async def test_cancel_pending_cancels_in_flight_send(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera()
+    started = asyncio.Event()
+
+    async def slow_send(**_kwargs: Any) -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    camera.async_start_streaming = AsyncMock(side_effect=slow_send)
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
+    keeper.start()
+    await started.wait()
+    task = keeper._task
+    assert task is not None
+    assert not task.done()
+
+    keeper.cancel_pending()
+    await asyncio.sleep(0)
+
+    assert task.done()
+    keeper.stop()
+
+
+async def test_request_later_fires_after_the_delay(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera()
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
+    keeper.start()
+    await hass.async_block_till_done()
+    assert camera.async_start_streaming.await_count == 1
+
+    keeper.request_later(10)
+    await hass.async_block_till_done()
+    assert camera.async_start_streaming.await_count == 1
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
+    await hass.async_block_till_done()
+    assert camera.async_start_streaming.await_count == 2
+    keeper.stop()
+
+
+async def test_cancel_pending_drops_a_delayed_request(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera()
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
+    keeper.start()
+    await hass.async_block_till_done()
+
+    keeper.request_later(10)
+    keeper.cancel_pending()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
+    await hass.async_block_till_done()
+
+    assert camera.async_start_streaming.await_count == 1
     keeper.stop()
