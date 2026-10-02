@@ -1201,9 +1201,14 @@ async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> N
     camera.async_start.assert_not_awaited()
 
 
-async def test_camera_reconnect_rerequests_local_stream(hass: HomeAssistant) -> None:
-    """A configured LAN push is re-requested on the reconnect transition."""
-    coordinator = _push_coordinator(_camera_state(connection_state=ConnectionState.RECONNECTING))
+async def test_camera_reconnect_waits_for_fresh_settings_before_local_stream(
+    hass: HomeAssistant,
+) -> None:
+    """After a control-session drop the remembered sleep state is not trusted."""
+    import dataclasses
+
+    awake = _camera_state(sleep_mode=False)
+    coordinator = _push_coordinator(awake)
     camera = MagicMock(uid="cam_1")
     camera.async_start_streaming = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
@@ -1212,15 +1217,56 @@ async def test_camera_reconnect_rerequests_local_stream(hass: HomeAssistant) -> 
     keeper = MagicMock()
     entity._local_stream = keeper
 
-    entity._handle_coordinator_update()  # observes RECONNECTING
+    entity._handle_coordinator_update()  # connected, awake
+    assert entity._confirmed_awake() is True
+
+    reconnecting = dataclasses.replace(
+        awake, connection=dataclasses.replace(awake.connection, state=ConnectionState.RECONNECTING)
+    )
+    coordinator.data = reconnecting
+    entity._handle_coordinator_update()
+    assert entity._confirmed_awake() is False
+    keeper.cancel_pending.assert_called()
+
+    # Back online with the same (remembered) settings object: still not trusted.
+    coordinator.data = dataclasses.replace(reconnecting, connection=awake.connection)
+    entity._handle_coordinator_update()
+    assert entity._confirmed_awake() is False
     keeper.request.assert_not_called()
 
-    coordinator.data = _camera_state(connection_state=ConnectionState.CONNECTED)
-    entity._handle_coordinator_update()  # RECONNECTING -> CONNECTED
-
-    keeper.request_later.assert_called_once()
-    keeper.request.assert_not_called()
+    # The camera reports settings in the new session: now it is trusted.
+    coordinator.data = _camera_state(sleep_mode=False)
+    entity._handle_coordinator_update()
+    assert entity._confirmed_awake() is True
+    keeper.request.assert_called_once_with()
     assert entity.extra_state_attributes == {"local_stream": True}
+
+
+async def test_camera_reconnect_into_sleep_never_requests_local_stream(
+    hass: HomeAssistant,
+) -> None:
+    import dataclasses
+
+    awake = _camera_state(sleep_mode=False)
+    coordinator = _push_coordinator(awake)
+    entity = NanitCameraEntity(
+        coordinator, MagicMock(uid="cam_1"), local_rtmp_url="rtmp://h:1935/n"
+    )
+    entity.hass = hass
+    _disable_state_writes(entity)
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    entity._handle_coordinator_update()
+    coordinator.data = dataclasses.replace(
+        awake, connection=dataclasses.replace(awake.connection, state=ConnectionState.DISCONNECTED)
+    )
+    entity._handle_coordinator_update()
+    coordinator.data = _camera_state(sleep_mode=True)  # fresh report: asleep
+    entity._handle_coordinator_update()
+
+    keeper.request.assert_not_called()
+    assert entity._confirmed_awake() is False
 
 
 async def test_camera_wake_rerequests_local_stream(hass: HomeAssistant) -> None:

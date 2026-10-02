@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -171,37 +170,4 @@ async def test_cancel_pending_cancels_in_flight_send(hass: HomeAssistant) -> Non
     await asyncio.sleep(0)
 
     assert task.done()
-    keeper.stop()
-
-
-async def test_request_later_fires_after_the_delay(hass: HomeAssistant) -> None:
-    hass = await _resolve_hass(hass)
-    camera = _camera()
-    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
-    keeper.start()
-    await hass.async_block_till_done()
-    assert camera.async_start_streaming.await_count == 1
-
-    keeper.request_later(10)
-    await hass.async_block_till_done()
-    assert camera.async_start_streaming.await_count == 1
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
-    await hass.async_block_till_done()
-    assert camera.async_start_streaming.await_count == 2
-    keeper.stop()
-
-
-async def test_cancel_pending_drops_a_delayed_request(hass: HomeAssistant) -> None:
-    hass = await _resolve_hass(hass)
-    camera = _camera()
-    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
-    keeper.start()
-    await hass.async_block_till_done()
-
-    keeper.request_later(10)
-    keeper.cancel_pending()
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
-    await hass.async_block_till_done()
-
-    assert camera.async_start_streaming.await_count == 1
     keeper.stop()

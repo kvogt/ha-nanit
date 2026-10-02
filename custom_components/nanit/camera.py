@@ -34,7 +34,6 @@ _STREAM_KEEPALIVE_INTERVAL = 5 * 60
 _STREAM_STOP_TIMEOUT = 5.0
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
-_LOCAL_STREAM_RECONNECT_DELAY = 10.0
 
 
 async def async_setup_entry(
@@ -83,6 +82,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._camera = camera
         self._local_rtmp_url = local_rtmp_url or None
         self._local_stream: LocalStreamKeeper | None = None
+        self._stale_settings: object | None = None
         self._prev_is_on: bool | None = None
         self._prev_conn_state: ConnectionState | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
@@ -116,6 +116,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         prev_conn_state = self._prev_conn_state
         self._prev_conn_state = conn_state
 
+        fresh_settings = self._track_settings_freshness(conn_state, prev_conn_state)
         if self._local_stream is not None and not self._confirmed_awake():
             self._local_stream.cancel_pending()
         if prev_on is not None and prev_on != cur_on:
@@ -136,10 +137,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             # handler does not re-send PUT_STREAMING. Resume the push now so
             # watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
-            if self._local_stream is not None:
-                # Settings re-read on reconnect land a moment later; the
-                # request re-checks sleep mode once they have.
-                self._local_stream.request_later(_LOCAL_STREAM_RECONNECT_DELAY)
+
+        if fresh_settings and self._local_stream is not None:
+            self._local_stream.request()
 
         super()._handle_coordinator_update()
 
@@ -172,10 +172,41 @@ class NanitCameraEntity(NanitEntity, Camera):
             )
             self._local_stream.start()
 
-    def _confirmed_awake(self) -> bool:
-        """Return True only when the camera reported sleep mode off; unknown counts as asleep."""
+    def _track_settings_freshness(
+        self, conn_state: ConnectionState | None, prev_conn_state: ConnectionState | None
+    ) -> bool:
+        """Mark settings stale across a control-session drop; return True when fresh ones arrive.
+
+        aionanit keeps the previous ``SettingsState`` object through connection
+        changes and replaces it only when the camera reports settings, so an
+        identity check tells a current-session report from a remembered one.
+        """
         data = self.coordinator.data
-        return data is not None and data.settings.sleep_mode is False
+        if data is None:
+            return False
+        reconnected = (
+            conn_state is ConnectionState.CONNECTED
+            and prev_conn_state is not None
+            and prev_conn_state is not ConnectionState.CONNECTED
+        )
+        if conn_state is not ConnectionState.CONNECTED or reconnected:
+            if self._stale_settings is None:
+                self._stale_settings = data.settings
+            return False
+        if self._stale_settings is not None and data.settings is not self._stale_settings:
+            self._stale_settings = None
+            return True
+        return False
+
+    def _confirmed_awake(self) -> bool:
+        """Return True only when this control session reported sleep mode off; unknown is asleep."""
+        data = self.coordinator.data
+        return (
+            data is not None
+            and data.connection.state is ConnectionState.CONNECTED
+            and self._stale_settings is None
+            and data.settings.sleep_mode is False
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:

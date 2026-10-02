@@ -17,7 +17,7 @@ from datetime import timedelta
 from urllib.parse import urlsplit
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.event import async_track_time_interval
 
 from aionanit import NanitCamera
 
@@ -70,7 +70,6 @@ class LocalStreamKeeper:
         self._url = url
         self._is_awake = is_awake
         self._cancel_interval: CALLBACK_TYPE | None = None
-        self._cancel_delayed: CALLBACK_TYPE | None = None
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -97,28 +96,10 @@ class LocalStreamKeeper:
 
     @callback
     def cancel_pending(self) -> None:
-        """Drop a delayed or in-flight request, e.g. when the camera goes to sleep."""
-        if self._cancel_delayed is not None:
-            self._cancel_delayed()
-            self._cancel_delayed = None
+        """Drop an in-flight request, e.g. when the camera goes to sleep."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
-
-    @callback
-    def request_later(self, delay: float) -> None:
-        """Request after ``delay`` seconds, so state pushed after a reconnect is seen first."""
-        if self._cancel_interval is None:
-            return
-        if self._cancel_delayed is not None:
-            self._cancel_delayed()
-
-        @callback
-        def _fire(_now: object) -> None:
-            self._cancel_delayed = None
-            self.request()
-
-        self._cancel_delayed = async_call_later(self._hass, delay, _fire)
 
     @callback
     def _handle_interval(self, _now: object = None) -> None:
