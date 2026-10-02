@@ -22,6 +22,8 @@ from aionanit import NanitAuthError, NanitClient, NanitConnectionError, NanitMfa
 from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
+    CONF_LOCAL_RTMP_URL,
+    CONF_LOCAL_RTMP_URLS,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IP,
@@ -30,6 +32,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .local_stream import is_valid_local_rtmp_url
 from .sanitize import display_name
 
 
@@ -417,6 +420,7 @@ class NanitOptionsFlow(OptionsFlow):
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
             speaker_ip = user_input.get(CONF_SPEAKER_IP, "").strip()
+            local_rtmp_url = user_input.get(CONF_LOCAL_RTMP_URL, "").strip()
 
             if camera_ip:
                 try:
@@ -430,7 +434,17 @@ class NanitOptionsFlow(OptionsFlow):
                 except ValueError:
                     errors[CONF_SPEAKER_IP] = "invalid_ip"
 
+            if local_rtmp_url and not is_valid_local_rtmp_url(local_rtmp_url):
+                errors[CONF_LOCAL_RTMP_URL] = "invalid_rtmp_url"
+
             if not errors:
+                current_rtmp_urls = dict(self.config_entry.options.get(CONF_LOCAL_RTMP_URLS, {}))
+                if camera_uid:
+                    if local_rtmp_url:
+                        current_rtmp_urls[camera_uid] = local_rtmp_url
+                    else:
+                        current_rtmp_urls.pop(camera_uid, None)
+
                 # Merge with existing camera IPs
                 current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
                 if camera_uid:
@@ -463,6 +477,7 @@ class NanitOptionsFlow(OptionsFlow):
                         **self.config_entry.options,
                         CONF_CAMERA_IPS: current_ips,
                         CONF_SPEAKER_IPS: current_speaker_ips,
+                        CONF_LOCAL_RTMP_URLS: current_rtmp_urls,
                     },
                 )
 
@@ -480,6 +495,13 @@ class NanitOptionsFlow(OptionsFlow):
         if speaker_uid:
             schema_fields[
                 vol.Optional(CONF_SPEAKER_IP, description={"suggested_value": current_speaker_ip})
+            ] = cv.string
+        if camera_uid:
+            current_rtmp_url = self.config_entry.options.get(CONF_LOCAL_RTMP_URLS, {}).get(
+                camera_uid, ""
+            )
+            schema_fields[
+                vol.Optional(CONF_LOCAL_RTMP_URL, description={"suggested_value": current_rtmp_url})
             ] = cv.string
 
         return self.async_show_form(

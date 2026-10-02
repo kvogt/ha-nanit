@@ -1134,3 +1134,64 @@ async def test_credentials_duplicate_of_legacy_camera_uid_entry_aborts(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.ABORT
     assert result_data.get("reason") == "already_configured"
+
+
+async def test_options_flow_sets_local_rtmp_url(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"local_rtmp_url": " rtmp://192.168.0.250:1935/nursery "},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"]["local_rtmp_urls"] == {
+        MOCK_BABY_1.camera_uid: "rtmp://192.168.0.250:1935/nursery"
+    }
+
+
+async def test_options_flow_rejects_invalid_local_rtmp_url(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"local_rtmp_url": "http://192.168.0.250/nursery"},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.FORM
+    assert _as_dict(result_data.get("errors")).get("local_rtmp_url") == "invalid_rtmp_url"
+
+
+async def test_options_flow_clears_local_rtmp_url_when_empty(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={"local_rtmp_urls": {MOCK_BABY_1.camera_uid: "rtmp://192.168.0.250:1935/n"}},
+    )
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"local_rtmp_url": ""}
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"]["local_rtmp_urls"] == {}

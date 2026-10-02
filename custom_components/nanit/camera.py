@@ -16,8 +16,10 @@ from aionanit import NanitCamera
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
+from .const import CONF_LOCAL_RTMP_URLS
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+from .local_stream import LocalStreamKeeper
 
 PARALLEL_UPDATES = 0
 
@@ -50,8 +52,13 @@ async def async_setup_entry(
             {},
             "async_reset_stream",
         )
+    local_rtmp_urls: dict[str, str] = entry.options.get(CONF_LOCAL_RTMP_URLS, {})
     async_add_entities(
-        NanitCameraEntity(cam_data.push_coordinator, cam_data.camera)
+        NanitCameraEntity(
+            cam_data.push_coordinator,
+            cam_data.camera,
+            local_rtmp_url=local_rtmp_urls.get(cam_data.camera.uid),
+        )
         for cam_data in entry.runtime_data.cameras.values()
     )
 
@@ -67,11 +74,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         self,
         coordinator: NanitPushCoordinator,
         camera: NanitCamera,
+        local_rtmp_url: str | None = None,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         Camera.__init__(self)
         self._camera = camera
+        self._local_rtmp_url = local_rtmp_url or None
+        self._local_stream: LocalStreamKeeper | None = None
         self._prev_is_on: bool | None = None
         self._prev_conn_state: ConnectionState | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
@@ -108,6 +118,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
+            if cur_on and self._local_stream is not None:
+                self._local_stream.request()
         else:
             self._invalidate_stream_if_expired()
 
@@ -121,6 +133,8 @@ class NanitCameraEntity(NanitEntity, Camera):
             # handler does not re-send PUT_STREAMING. Resume the push now so
             # watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
+            if self._local_stream is not None:
+                self._local_stream.request()
 
         super()._handle_coordinator_update()
 
@@ -133,6 +147,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         (stopped) camera, which resurrects its WebSocket and redirects the
         camera's push away from the replacement entity's stream.
         """
+        if self._local_stream is not None:
+            self._local_stream.stop()
+            self._local_stream = None
         self._invalidate_stream("entity removal")
         for task in (self._stream_refresh_task, self._stream_keepalive_task):
             if task is not None and not task.done():
@@ -140,6 +157,22 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_refresh_task = None
         self._stream_keepalive_task = None
         await super().async_will_remove_from_hass()
+
+    async def async_added_to_hass(self) -> None:
+        """Start the LAN RTMP push when one is configured for this camera."""
+        await super().async_added_to_hass()
+        if self._local_rtmp_url is not None:
+            self._local_stream = LocalStreamKeeper(
+                self.hass, self._camera, self._local_rtmp_url, lambda: self.is_on
+            )
+            self._local_stream.start()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose whether a LAN RTMP push is configured."""
+        if self._local_rtmp_url is None:
+            return None
+        return {"local_stream": True}
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
         """Stop and discard HA's cached stream so a fresh one can be created."""

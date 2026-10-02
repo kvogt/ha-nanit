@@ -1,5 +1,7 @@
 # Nanit — Home Assistant Integration
 
+> **kvogt fork.** Adds an optional per-camera *Local RTMP stream URL* (Settings → Devices & services → Nanit → Configure → pick a camera). When set, the integration keeps that camera pushing its live RTMP stream to the URL (for example a go2rtc RTMP listener on your LAN), re-requesting it every 60 s, after every reconnect and when the camera wakes from sleep mode. The camera keeps its normal push to Nanit's cloud at the same time, so the Nanit app is unaffected. Nothing is sent while the camera is in sleep mode.
+
 <p align="center">
   <img src="custom_components/nanit/brand/icon@2x.png" alt="Nanit" width="128" />
 </p>

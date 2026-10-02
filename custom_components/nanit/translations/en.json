@@ -61,9 +61,17 @@
         "description": "Enter local IP addresses for **{camera_name}** for local-first connectivity. Leave blank to use cloud only.",
         "data": {
           "camera_ip": "Camera IP Address",
-          "speaker_ip": "Sound & Light Machine IP Address"
+          "speaker_ip": "Sound & Light Machine IP Address",
+          "local_rtmp_url": "Local RTMP stream URL"
+        },
+        "data_description": {
+          "local_rtmp_url": "Optional. An rtmp:// URL on your LAN (for example a go2rtc RTMP listener). The camera keeps pushing its live video there, alongside the Nanit cloud. Leave blank for cloud only."
         }
       }
+    },
+    "error": {
+      "invalid_ip": "Invalid IP address",
+      "invalid_rtmp_url": "Enter an rtmp:// or rtmps:// URL with a host and a stream path"
     }
   },
   "exceptions": {

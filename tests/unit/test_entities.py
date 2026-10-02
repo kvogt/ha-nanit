@@ -1199,3 +1199,67 @@ async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> N
     assert camera.async_start_streaming.await_count == 3
     camera.async_stop.assert_not_awaited()
     camera.async_start.assert_not_awaited()
+
+
+async def test_camera_reconnect_rerequests_local_stream(hass: HomeAssistant) -> None:
+    """A configured LAN push is re-requested on the reconnect transition."""
+    coordinator = _push_coordinator(_camera_state(connection_state=ConnectionState.RECONNECTING))
+    camera = MagicMock(uid="cam_1")
+    camera.async_start_streaming = AsyncMock()
+    entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
+    entity.hass = hass
+    _disable_state_writes(entity)
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    entity._handle_coordinator_update()  # observes RECONNECTING
+    keeper.request.assert_not_called()
+
+    coordinator.data = _camera_state(connection_state=ConnectionState.CONNECTED)
+    entity._handle_coordinator_update()  # RECONNECTING -> CONNECTED
+
+    keeper.request.assert_called_once_with()
+    assert entity.extra_state_attributes == {"local_stream": True}
+
+
+async def test_camera_wake_rerequests_local_stream(hass: HomeAssistant) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=True))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
+    entity.hass = hass
+    _disable_state_writes(entity)
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    entity._handle_coordinator_update()  # observes sleep
+    coordinator.data = _camera_state(sleep_mode=False)
+    entity._handle_coordinator_update()  # sleep -> awake
+
+    keeper.request.assert_called_once_with()
+
+
+async def test_camera_without_local_stream_has_no_keeper(hass: HomeAssistant) -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+
+    assert entity._local_stream is None
+    assert entity.extra_state_attributes is None
+
+
+async def test_camera_removal_stops_local_stream(hass: HomeAssistant) -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera, local_rtmp_url="rtmp://192.168.0.250:1935/n")
+    entity.hass = hass
+    keeper = MagicMock()
+    entity._local_stream = keeper
+
+    with patch(
+        "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_will_remove_from_hass",
+        AsyncMock(),
+    ):
+        await entity.async_will_remove_from_hass()
+
+    keeper.stop.assert_called_once_with()
+    assert entity._local_stream is None
