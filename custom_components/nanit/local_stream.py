@@ -20,6 +20,8 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 
 from aionanit import NanitCamera
+from aionanit.parsers import _parse_settings
+from aionanit.proto import GetSettings, RequestType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +50,20 @@ def redact_url(url: str) -> str:
     except ValueError:
         return "<invalid url>"
     return f"{parts.scheme}://{parts.hostname}{port}/…"
+
+
+async def async_camera_reports_awake(camera: NanitCamera) -> bool:
+    """Ask the camera for its settings now; True only if the reply says sleep mode is off.
+
+    A reply without the sleep field counts as asleep. The request skips the
+    library's reconnect-on-timeout, which would itself stop the camera's pushes.
+    """
+    resp = await camera._send_request(
+        RequestType.GET_SETTINGS,
+        get_settings=GetSettings(all=True),
+        reconnect_on_failure=False,
+    )
+    return _parse_settings(resp).sleep_mode is False
 
 
 class LocalStreamKeeper:
@@ -120,6 +136,14 @@ class LocalStreamKeeper:
 
     async def _async_send(self) -> None:
         try:
+            # The camera itself confirms it is awake right before every
+            # request; cached or merged state is never enough.
+            if not await async_camera_reports_awake(self._camera) or not self._is_awake():
+                _LOGGER.debug(
+                    "Camera %s did not report sleep mode off; local stream not requested",
+                    self._camera.uid,
+                )
+                return
             # Best effort: forcing a control reconnect on a late ACK would
             # itself stop the camera's pushes.
             await self._camera.async_start_streaming(

@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
+from aionanit.proto import RequestType, Response, Settings
 from custom_components.nanit.local_stream import (
     LOCAL_STREAM_INTERVAL,
     LocalStreamKeeper,
@@ -27,12 +28,16 @@ async def _resolve_hass(hass: Any) -> HomeAssistant:
     return cast(HomeAssistant, hass)
 
 
-def _camera(*, connected: bool = True, fail: bool = False) -> MagicMock:
+def _camera(
+    *, connected: bool = True, fail: bool = False, settings: Settings | None = None
+) -> MagicMock:
     camera = MagicMock(uid="cam_1")
     camera.connected = connected
     camera.async_start_streaming = AsyncMock(
         side_effect=RuntimeError("ack timeout") if fail else None
     )
+    reply = Response(settings=settings if settings is not None else Settings(sleep_mode=False))
+    camera._send_request = AsyncMock(return_value=reply)
     return camera
 
 
@@ -170,4 +175,61 @@ async def test_cancel_pending_cancels_in_flight_send(hass: HomeAssistant) -> Non
     await asyncio.sleep(0)
 
     assert task.done()
+    keeper.stop()
+
+
+async def test_each_request_first_asks_the_camera_without_reconnecting(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera()
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
+
+    keeper.start()
+    await hass.async_block_till_done()
+
+    camera._send_request.assert_awaited_once()
+    args, kwargs = camera._send_request.await_args
+    assert args[0] == RequestType.GET_SETTINGS
+    assert kwargs["reconnect_on_failure"] is False
+    camera.async_start_streaming.assert_awaited_once()
+    keeper.stop()
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [Settings(sleep_mode=True), Settings(volume=40), Settings()],
+    ids=["asleep", "partial-without-sleep-field", "empty"],
+)
+async def test_no_request_unless_the_camera_reports_sleep_off(
+    hass: HomeAssistant, settings: Settings
+) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera(settings=settings)
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: True)
+
+    keeper.start()
+    await hass.async_block_till_done()
+
+    camera._send_request.assert_awaited_once()
+    camera.async_start_streaming.assert_not_awaited()
+    keeper.stop()
+
+
+async def test_no_request_when_cached_state_turns_asleep_during_the_check(
+    hass: HomeAssistant,
+) -> None:
+    hass = await _resolve_hass(hass)
+    camera = _camera()
+    state = {"awake": True}
+
+    async def reply(*_args: Any, **_kwargs: Any) -> Response:
+        state["awake"] = False  # a sleep update lands while the check is in flight
+        return Response(settings=Settings(sleep_mode=False))
+
+    camera._send_request = AsyncMock(side_effect=reply)
+    keeper = LocalStreamKeeper(hass, camera, URL, lambda: state["awake"])
+
+    keeper.start()
+    await hass.async_block_till_done()
+
+    camera.async_start_streaming.assert_not_awaited()
     keeper.stop()
